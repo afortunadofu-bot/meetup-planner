@@ -5,6 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>有約</title>
 <meta name="description" content="見一面，好好約。寫張卡片，或開一張時間表——日子、地點，都留到之後再說。" />
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%227%22%20fill%3D%22%230c0b0a%22/%3E%3Crect%20x%3D%2210.5%22%20y%3D%2210.5%22%20width%3D%2211%22%20height%3D%2211%22%20fill%3D%22%23bf5629%22%20transform%3D%22rotate%2845%2016%2016%29%22/%3E%3C/svg%3E" />
+<meta property="og:type" content="website" />
+<meta property="og:title" content="有約" />
+<meta property="og:description" content="見一面，好好約。寫張卡片，或開一張時間表——日子、地點，都留到之後再說。" />
+<meta name="twitter:card" content="summary" />
+<meta name="twitter:title" content="有約" />
+<meta name="twitter:description" content="見一面，好好約。寫張卡片，或開一張時間表——日子、地點，都留到之後再說。" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jost:wght@300;400;500;600;700&family=Noto+Serif+TC:wght@500;600;700;900&family=Noto+Sans+TC:wght@300;400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" />
@@ -14,16 +21,22 @@
 <div class="stage" aria-hidden="true"><div class="stage__img" id="bgA"></div><div class="stage__img" id="bgB"></div><div class="stage__scrim"></div><div class="stage__vig"></div></div>
 <div class="grain" aria-hidden="true"></div>
 <div id="app" class="wrap"></div>
+<footer class="siteFoot">© <span id="copyYear">2026</span> 有約</footer>
 <script>
 (function () {
   "use strict";
 
-  /* ================= remote storage ==================
+  /* ================= remote storage =================
      jsonblob.com — free, no signup, CORS-enabled public JSON store, used as the
-     shared backend so two browsers on the same link stay in sync. These four
-     functions are the ONLY place this app touches the network; swap them if you
-     want to point at your own API instead. */
+     shared backend so two browsers on the same link stay in sync. A second
+     provider (jsonstorage.net) is used as an automatic fallback if jsonblob
+     fails when CREATING a new invite, so one provider having a bad day
+     doesn't fully break new links; ids created there are tagged "alt:" so
+     later reads/writes for that one invite know to go back to that same
+     provider. This block is the ONLY place this app touches the network —
+     swap it for your own API if you'd rather. */
   var BLOB_API = "https://jsonblob.com/api/jsonBlob";
+  var ALT_API = "https://api.jsonstorage.net/v1/json";
   var POLL_MS = 5000;
   var blobId = null;
   var pollTimer = null;
@@ -38,23 +51,62 @@
     u.searchParams.set("id", id);
     history.replaceState(null, "", u.toString());
   }
-  function fetchRemote(id) {
-    return fetch(BLOB_API + "/" + encodeURIComponent(id), { headers: { Accept: "application/json" } })
-      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); });
+  function isAltId(id) { return typeof id === "string" && id.slice(0, 4) === "alt:"; }
+  function httpError(status) {
+    var e = new Error("HTTP " + status);
+    e.httpStatus = status;
+    return e;
   }
-  function createRemote(stateObj) {
-    return fetch(BLOB_API, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(stateObj) })
+  function fetchOk(url, opts) {
+    return fetch(url, opts).then(function (r) { if (!r.ok) throw httpError(r.status); return r; });
+  }
+  // Retries only genuine network hiccups (fetch() itself rejecting — offline,
+  // DNS, CORS, a blocked request) with a short backoff. A clean HTTP error
+  // (like a 404 for a link that never existed) fails immediately — retrying
+  // that would never help, just delay the real answer.
+  function withRetry(fn, tries, delay) {
+    return fn().catch(function (err) {
+      if (tries <= 1 || (err && err.httpStatus)) return Promise.reject(err);
+      return new Promise(function (resolve) { setTimeout(resolve, delay); })
+        .then(function () { return withRetry(fn, tries - 1, delay * 2); });
+    });
+  }
+  function fetchFromBlob(id) {
+    return fetchOk(BLOB_API + "/" + encodeURIComponent(id), { headers: { Accept: "application/json" } }).then(function (r) { return r.json(); });
+  }
+  function fetchFromAlt(id) {
+    return fetchOk(ALT_API + "/" + id.slice(4), { headers: { Accept: "application/json" } }).then(function (r) { return r.json(); });
+  }
+  function fetchRemote(id) {
+    return withRetry(function () { return isAltId(id) ? fetchFromAlt(id) : fetchFromBlob(id); }, 3, 700);
+  }
+  function createOnBlob(stateObj) {
+    return fetchOk(BLOB_API, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(stateObj) })
       .then(function (r) {
-        if (!r.ok) throw new Error("HTTP " + r.status);
         var loc = r.headers.get("Location") || r.headers.get("location");
         var id = loc ? loc.split("/").filter(Boolean).pop() : null;
         if (!id) throw new Error("伺服器沒有回傳連結編號");
         return id;
       });
   }
+  function createOnAlt(stateObj) {
+    return fetchOk(ALT_API, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(stateObj) })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        var m = j && j.uri && String(j.uri).match(/\/v1\/json\/(.+)$/);
+        if (!m) throw new Error("備援伺服器沒有回傳連結編號");
+        return "alt:" + m[1];
+      });
+  }
+  function createRemote(stateObj) {
+    return withRetry(function () { return createOnBlob(stateObj); }, 3, 700)
+      .catch(function () { return createOnAlt(stateObj); });
+  }
   function putRemote(id, stateObj) {
-    return fetch(BLOB_API + "/" + encodeURIComponent(id), { method: "PUT", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(stateObj) })
-      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); });
+    var url = isAltId(id) ? ALT_API + "/" + id.slice(4) : BLOB_API + "/" + encodeURIComponent(id);
+    return withRetry(function () {
+      return fetchOk(url, { method: "PUT", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(stateObj) });
+    }, 3, 700);
   }
 
   /* ================= design system ================= */
@@ -97,6 +149,7 @@
     "@media (prefers-reduced-motion:reduce){.stage__img.on{animation:none;}}",
 
     ".wrap{max-width:624px;margin:0 auto;padding:24px 22px 96px;position:relative;z-index:1;}",
+    ".siteFoot{max-width:624px;margin:-64px auto 0;padding:0 22px 28px;text-align:center;font-family:'IBM Plex Mono','Noto Sans TC',monospace;font-size:.62rem;letter-spacing:.1em;color:rgba(243,233,218,.28);position:relative;z-index:1;}",
     "@media (max-width:560px){.wrap{padding:16px 15px 72px;}}",
 
     /* ---------- type ---------- */
@@ -184,6 +237,8 @@
     ".btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:12px 24px;font-family:'Jost','Noto Sans TC',sans-serif;font-weight:600;font-size:.91rem;letter-spacing:.04em;border:1px solid transparent;text-decoration:none;transition:transform .14s,box-shadow .18s,background .18s,color .18s,border-color .18s;}",
     ".btn:active{transform:translate(1px,1px);}",
     ".btn:focus-visible{outline:2px solid var(--terra);outline-offset:3px;}",
+    ".btn:disabled{opacity:.55;cursor:default;}",
+    ".btn:disabled:active{transform:none;}",
     ".btn--go{background:var(--ink);color:var(--paper);box-shadow:4px 4px 0 var(--terra);}",
     ".btn--go:hover{box-shadow:6px 6px 0 var(--terra);}",
     ".btn--ghost{background:transparent;border-color:var(--rule);color:var(--ink);}",
@@ -365,6 +420,40 @@
     ".addrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}",
     ".addrow input{background:var(--paper-2);border:1px solid var(--rule);padding:8px 10px;font-family:'IBM Plex Mono',monospace;font-size:.81rem;color:var(--ink);}",
 
+    /* ---------- gacha (fortune capsule machine) ---------- */
+    ".gacha{position:relative;width:168px;margin:8px auto 6px;display:flex;flex-direction:column;align-items:center;}",
+    ".gacha__dome{width:150px;height:106px;border-radius:75px 75px 12px 12px;background:radial-gradient(circle at 34% 28%,color-mix(in srgb,var(--terra) 20%,var(--paper)),var(--paper-2) 72%);border:2px solid var(--ink);position:relative;overflow:hidden;box-shadow:inset 0 -6px 0 rgba(0,0,0,.06);}",
+    ".gacha__balls{position:absolute;inset:10px 12px 12px;background-image:radial-gradient(circle at 20% 25%,var(--terra) 0 9px,transparent 9px),radial-gradient(circle at 55% 45%,var(--slate) 0 8px,transparent 8px),radial-gradient(circle at 80% 22%,var(--gold) 0 7px,transparent 7px),radial-gradient(circle at 35% 72%,var(--cat-outdoor) 0 8px,transparent 8px),radial-gradient(circle at 72% 70%,var(--cat-ktv) 0 7px,transparent 7px);opacity:.85;}",
+    ".gacha__dome.is-spin .gacha__balls{animation:gachaJiggle .45s ease-in-out infinite;}",
+    "@keyframes gachaJiggle{0%,100%{transform:translate(0,0) rotate(0);}25%{transform:translate(-2px,1px) rotate(-3deg);}50%{transform:translate(2px,-1px) rotate(3deg);}75%{transform:translate(-1px,2px) rotate(-2deg);}}",
+    ".gacha__chute{width:14px;height:20px;background:var(--ink);margin:-2px 0 0;}",
+    ".gacha__capsule{width:20px;height:20px;margin:0 auto;border-radius:50%;background:linear-gradient(135deg,var(--terra),var(--terra-2));border:2px solid var(--ink);opacity:0;transform:translateY(-10px) scale(.6);}",
+    ".gacha__capsule.is-drop{animation:gachaDrop .9s cubic-bezier(.3,.9,.4,1.1) both;}",
+    "@keyframes gachaDrop{0%{opacity:0;transform:translateY(-10px) scale(.6);}18%{opacity:1;}55%{transform:translateY(30px) scale(1.05);}75%{transform:translateY(24px) scale(.94);}100%{opacity:1;transform:translateY(28px) scale(1);}}",
+    ".gacha__base{width:168px;height:36px;background:var(--ink);border-radius:6px;display:flex;align-items:center;justify-content:space-between;padding:0 14px;margin-top:-2px;}",
+    ".gacha__crank{width:16px;height:16px;border-radius:50%;border:3px solid var(--terra);position:relative;flex:none;}",
+    ".gacha__crank::after{content:'';position:absolute;top:50%;left:50%;width:11px;height:3px;background:var(--terra);transform:translate(-2px,-50%);}",
+    ".gacha__crank.is-turn{animation:gachaCrank .9s linear;}",
+    "@keyframes gachaCrank{to{transform:rotate(300deg);}}",
+    ".gacha__tray{width:34px;height:7px;border-radius:2px 2px 0 0;background:var(--paper-3);}",
+
+    /* ---------- fortune slip ---------- */
+    ".fortune-slip{margin-top:16px;padding:18px 18px 16px;background:var(--paper-2);border:1px dashed var(--rule);text-align:center;animation:rise .4s cubic-bezier(.2,.8,.3,1) both;}",
+    ".fortune-slip__label{font-family:'IBM Plex Mono','Noto Sans TC',monospace;font-size:.62rem;letter-spacing:.2em;color:var(--ink-3);text-transform:uppercase;margin-bottom:10px;}",
+    ".fortune-slip__poem{font-family:'Noto Serif TC',serif;font-weight:600;font-size:1.02rem;line-height:1.85;color:var(--ink);margin:0;}",
+    ".fortune-slip__src{display:block;font-style:normal;font-family:'IBM Plex Mono','Noto Sans TC',monospace;font-size:.64rem;letter-spacing:.1em;color:var(--gold);margin-top:9px;}",
+    ".fortune-slip__note{margin-top:11px;font-family:'IBM Plex Mono','Noto Sans TC',monospace;font-size:.72rem;letter-spacing:.08em;color:var(--terra-2);font-weight:600;}",
+    ".fortune-slip--mini{margin-top:18px;padding:14px 16px;}",
+    ".fortune-slip--mini .fortune-slip__poem{font-size:.86rem;}",
+
+    /* ---------- decline (can't actually be clicked) ---------- */
+    ".btn--nope{opacity:.4;cursor:default;}",
+    ".btn--nope:active{transform:none;}",
+    ".btn--nope.shake{animation:nopeShake .4s ease;}",
+    "@keyframes nopeShake{0%,100%{transform:translateX(0);}20%{transform:translateX(-4px);}40%{transform:translateX(4px);}60%{transform:translateX(-3px);}80%{transform:translateX(3px);}}",
+    ".decline-hint{margin-top:10px;font-size:.72rem;color:var(--terra-2);opacity:0;transition:opacity .25s;min-height:1em;}",
+    ".decline-hint.show{opacity:1;}",
+
     ".foot{text-align:center;color:var(--glow-3);font-family:'IBM Plex Mono','Noto Sans TC',monospace;font-size:.67rem;letter-spacing:.12em;margin-top:30px;line-height:2;text-shadow:0 1px 10px rgba(6,5,4,.7);}",
   ].join("\n");
 
@@ -500,6 +589,25 @@
   var CATEGORY_LIST = ["meal", "ktv", "boardgame", "cafe", "outdoor", "movie", "sport", "art"];
   var SCENE_NO = ["壹", "貳", "參", "肆", "伍", "陸", "柒", "捌"];
 
+  /* ---------- fortune slips for the gacha machine ---------- */
+  var FORTUNES = [
+    { poem: "見了他，她變得很低很低，低到塵埃裡，但她心裡是歡喜的，從塵埃裡開出花來。", src: "張愛玲", note: "宜靠近，宜坦白" },
+    { poem: "我將於茫茫人海中訪我唯一靈魂之伴侶，得之，我幸；不得，我命。", src: "徐志摩", note: "宜等待，宜隨緣" },
+    { poem: "我明白你會來，所以我等。", src: "沈從文", note: "宜赴約，宜守時" },
+    { poem: "你是人間的四月天。", src: "林徽因", note: "宜相見，宜歡喜" },
+    { poem: "從前的日色變得慢，車，馬，郵件都慢，一生只夠愛一個人。", src: "木心", note: "宜慢下來，宜久處" },
+    { poem: "喜歡是乍見之歡，愛是久處不厭。", src: "張小嫻", note: "宜相處，宜久坐" },
+    { poem: "陪伴是最長情的告白。", src: "廖一梅", note: "宜久處，宜同行" },
+    { poem: "Whatever our souls are made of, his and mine are the same.", src: "Emily Brontë", note: "宜靠近，宜相守" },
+    { poem: "It is only with the heart that one can see rightly.", src: "Antoine de Saint-Exupéry", note: "宜用心，宜靠近" },
+    { poem: "Lovers don't finally meet somewhere. They're in each other all along.", src: "Rumi", note: "宜相遇，宜安心" },
+    { poem: "To love oneself is the beginning of a lifelong romance.", src: "Oscar Wilde", note: "宜自在，宜出門" },
+    { poem: "I love you without knowing how, or when, or from where.", src: "Pablo Neruda", note: "宜靠近，宜告白" },
+    { poem: "Journeys end in lovers meeting, every wise man's son doth know.", src: "William Shakespeare", note: "宜赴約，宜相聚" },
+    { poem: "How do I love thee? Let me count the ways.", src: "Elizabeth Barrett Browning", note: "宜細數，宜靠近" },
+    { poem: "The supreme happiness of life is the conviction that one is loved.", src: "Victor Hugo", note: "宜安心，宜珍惜" }
+  ];
+
   /* ================= helpers ================= */
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
@@ -626,7 +734,7 @@
     return '<div class="banner banner--' + banner.type + '">' + esc(banner.text) + retry + "</div>";
   }
   function topbar(hideBack) {
-    return '<div class="topbar"><span class="brand"><span class="brand__dot"></span>有約</span>' +
+    return '<div class="topbar"><button type="button" class="brand" data-action="back-home" aria-label="回主選單"><span class="brand__dot"></span>有約</button>' +
       (readOnly || hideBack ? '<span class="label">◆</span>' : '<button type="button" class="back-link" data-action="back-home">← 回開頭</button>') + "</div>";
   }
   function orn() { return '<div class="orn"><span class="orn__mark">◆ ◆ ◆</span></div>'; }
@@ -708,8 +816,20 @@
   }
 
   /* ================= SOLO ================= */
+  // "Am I the person who wrote this card?" has to be scoped per invite id —
+  // a single flat flag would bleed across tabs/links (e.g. a new tab spawned
+  // from one invite inheriting sessionStorage would wrongly claim a second,
+  // unrelated invite too), so several invite links can be open at once
+  // without fighting over who's the creator. localCreated covers the instant
+  // right after sending, before the new id even exists yet.
+  var localCreated = false;
   function isCreator() {
-    try { return sessionStorage.getItem("solo_is_creator") === "1"; } catch (e) { return false; }
+    if (localCreated) return true;
+    if (!blobId) return false;
+    try { return sessionStorage.getItem("solo_creator_" + blobId) === "1"; } catch (e) { return false; }
+  }
+  function markCreator(id) {
+    try { sessionStorage.setItem("solo_creator_" + id, "1"); } catch (e) {}
   }
   function renderSolo() {
     var s = state.solo;
@@ -762,7 +882,8 @@
         ? '<p class="card__said">' + esc(s.note) + "</p>"
         : '<p class="card__said" style="font-style:normal;color:var(--ink-3);">他還沒說想去哪——全部交給你決定。</p>') +
       '<div class="acts"><button type="button" class="btn btn--go" data-action="solo-accept">好啊，我來挑 →</button>' +
-      '<button type="button" class="btn btn--quiet" data-action="solo-decline">這次先不了</button></div>' +
+      '<button type="button" class="btn btn--quiet btn--nope" data-action="solo-decline-nope">這次先不了</button></div>' +
+      '<p class="decline-hint" id="declineHint">這個選項，好像按不下去。</p>' +
       "</div></div>" +
       '<p class="foot">一路點下去就好，不用打字</p>'
     );
@@ -786,12 +907,12 @@
   }
 
   function soloSteps() {
-    var steps = [{ k: "cat" }];
+    var steps = [{ k: "gacha" }, { k: "date" }, { k: "cat" }];
     orderedCats(soloDraft.categories).forEach(function (c) {
       steps.push({ k: "tags", cat: c.key });
       steps.push({ k: "vibes", cat: c.key });
     });
-    steps.push({ k: "date" }, { k: "time" }, { k: "place" }, { k: "note" });
+    steps.push({ k: "time" }, { k: "place" }, { k: "note" });
     return steps;
   }
   function filmStrip(cur, total) {
@@ -824,6 +945,10 @@
     var total = steps.length;
     var body, cat, order;
 
+    if (st.k === "gacha") {
+      body = renderGacha(d);
+      return wizShell("籤詩", "抽一支籤，看看今天運勢", "轉一下扭蛋機，看看抽到什麼。", body, soloStep, total, "產生卡片");
+    }
     if (st.k === "cat") {
       body = '<div class="pick-grid">' + CATEGORY_LIST.map(function (k, i) {
         return catCard(CATEGORIES[k], d.categories.has(k), "wiz-toggle-cat", i);
@@ -868,6 +993,28 @@
       '<button type="button" class="time" data-action="wiz-time-custom" aria-pressed="' + (d.customTime ? "true" : "false") + '"><b>其他</b><span>自己填一個</span></button></div>';
     if (d.customTime) html += '<input class="fld" id="wizCustomTime" type="time" style="margin-top:12px;max-width:170px;" value="' + esc(d.time) + '" />';
     return html;
+  }
+  function renderGacha(d) {
+    var phase = d.gachaPhase || "idle";
+    var machine =
+      '<div class="gacha">' +
+      '<div class="gacha__dome' + (phase === "spin" ? " is-spin" : "") + '"><div class="gacha__balls"></div></div>' +
+      '<div class="gacha__chute"><div class="gacha__capsule' + (phase === "done" ? " is-drop" : "") + '"></div></div>' +
+      '<div class="gacha__base"><div class="gacha__crank' + (phase === "spin" ? " is-turn" : "") + '"></div><div class="gacha__tray"></div></div>' +
+      "</div>";
+    var action = phase === "done"
+      ? '<div class="acts"><button type="button" class="btn btn--ghost btn--sm" data-action="gacha-again">再抽一次</button></div>'
+      : '<div class="acts"><button type="button" class="btn btn--go" data-action="gacha-pull"' + (phase === "spin" ? " disabled" : "") + ">" + (phase === "spin" ? "轉動中…" : "轉一下扭蛋機 →") + "</button></div>";
+    var slip = "";
+    if (phase === "done" && d.fortune) {
+      slip = '<div class="fortune-slip">' +
+        '<div class="fortune-slip__label">今日籤詩</div>' +
+        '<p class="fortune-slip__poem">' + esc(d.fortune.poem) + "</p>" +
+        '<cite class="fortune-slip__src">——' + esc(d.fortune.src) + "</cite>" +
+        '<div class="fortune-slip__note">' + esc(d.fortune.note) + "</div>" +
+        "</div>";
+    }
+    return machine + action + slip;
   }
 
   function renderSoloResult(mine) {
@@ -919,6 +1066,9 @@
       '<h1 class="card__title">' + esc(catNames(cats)) + "</h1>" +
       (s.replyNote ? '<p class="card__said">' + esc(s.replyNote) + "</p>" : "") +
       '<div class="credits">' + scenes + whenBlock + "</div>" +
+      (s.fortune
+        ? '<div class="fortune-slip fortune-slip--mini"><div class="fortune-slip__label">那天抽到的籤</div><p class="fortune-slip__poem">' + esc(s.fortune.poem) + '</p><cite class="fortune-slip__src">——' + esc(s.fortune.src) + '</cite><div class="fortune-slip__note">' + esc(s.fortune.note) + "</div></div>"
+        : "") +
       '<div class="acts">' + calBtn(url) + "</div>" +
       (mine ? '<p style="margin-top:16px;"><button type="button" class="btn--quiet" data-action="solo-reset">↻ 再寫一張新的卡片</button></p>' : "") +
       "</div></div>" +
@@ -1219,7 +1369,7 @@
   function syncToRemote(stateObj) {
     var task = blobId
       ? putRemote(blobId, stateObj)
-      : createRemote(stateObj).then(function (id) { blobId = id; setIdInUrl(id); startPolling(); renderApp(); });
+      : createRemote(stateObj).then(function (id) { blobId = id; if (localCreated) markCreator(id); setIdInUrl(id); startPolling(); renderApp(); });
     task.then(function () {
       lastFailedSync = null;
       if (banner && banner.type === "error") { banner = null; renderApp(); }
@@ -1299,7 +1449,17 @@
       renderApp(); return;
     }
     if (action === "back-home") {
+      // Leaving a committed invite/event entirely, not just undoing a step:
+      // stop talking to its blob and drop its id from the URL, so a stray
+      // poll tick can't silently pull the old screen back a few seconds later.
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      blobId = null; lastFailedSync = null; banner = null; localCreated = false;
+      state = emptyState();
       navMode = null; navCategories = new Set(); navSetupOpen = false; composeDraft = null;
+      draft = null; soloDraft = null; soloStep = 0;
+      var uh = new URL(location.href);
+      uh.searchParams.delete("id");
+      history.replaceState(null, "", uh.toString());
       renderApp(); return;
     }
     if (action === "toggle-nav-cat") {
@@ -1324,8 +1484,9 @@
       var cnote = ((document.getElementById("composeNote") || {}).value || "").trim();
       if (!inviter) { var ce = document.getElementById("composeError"); if (ce) ce.textContent = "先寫個名字吧，他才知道是誰"; return; }
       var nsC = cloneState(state);
-      nsC.solo = { inviterName: inviter, inviteeName: invitee, note: cnote, categories: [], picks: {}, vibes: {}, date: null, time: null, place: null, responded: false, answer: null, replyNote: "", createdAt: Date.now() };
-      try { sessionStorage.setItem("solo_is_creator", "1"); } catch (e0) {}
+      nsC.solo = { inviterName: inviter, inviteeName: invitee, note: cnote, categories: [], picks: {}, vibes: {}, date: null, time: null, place: null, responded: false, answer: null, replyNote: "", fortune: null, createdAt: Date.now() };
+      localCreated = true;
+      if (blobId) markCreator(blobId); // reusing an existing link (e.g. after "write a new one") — id is already known
       composeDraft = null;
       publishState(nsC);
       return;
@@ -1333,13 +1494,41 @@
 
     /* --- solo: everything from here is the recipient tapping --- */
     if (action === "solo-accept") {
-      soloDraft = { categories: new Set(), picks: {}, vibes: {}, date: "", time: "", customTime: false, place: "", note: "" };
+      soloDraft = { categories: new Set(), picks: {}, vibes: {}, date: "", time: "", customTime: false, place: "", note: "", gachaPhase: "idle", fortune: null };
       soloStep = 0; renderApp(); return;
     }
     if (action === "solo-decline") {
       var nsD = cloneState(state);
       nsD.solo.responded = true; nsD.solo.answer = "no"; nsD.solo.respondedAt = Date.now();
       publishState(nsD); return;
+    }
+    if (action === "solo-decline-nope") {
+      // playful, deliberate: this option looks clickable but never actually
+      // lets the recipient decline — it just shakes and offers a coy hint.
+      btn.classList.remove("shake"); void btn.offsetWidth; btn.classList.add("shake");
+      var dh = document.getElementById("declineHint");
+      if (dh) { dh.classList.add("show"); clearTimeout(dh._t); dh._t = setTimeout(function () { dh.classList.remove("show"); }, 1600); }
+      return;
+    }
+    if (action === "gacha-pull") {
+      if (!soloDraft || soloDraft.gachaPhase === "spin") return;
+      soloDraft.gachaPhase = "spin";
+      renderApp();
+      setTimeout(function () {
+        if (!soloDraft || soloDraft.gachaPhase !== "spin") return;
+        var pick = FORTUNES[Math.floor(Math.random() * FORTUNES.length)];
+        soloDraft.fortune = pick;
+        soloDraft.gachaPhase = "done";
+        renderApp();
+      }, 900);
+      return;
+    }
+    if (action === "gacha-again") {
+      if (!soloDraft) return;
+      soloDraft.gachaPhase = "idle";
+      soloDraft.fortune = null;
+      renderApp();
+      return;
     }
     if (action === "wiz-toggle-cat") {
       var wk = btn.dataset.category;
@@ -1378,6 +1567,7 @@
       ns2.solo.vibes = setMapToArrays(d.vibes);
       ns2.solo.date = d.date; ns2.solo.time = d.time; ns2.solo.place = d.place;
       ns2.solo.replyNote = d.note;
+      ns2.solo.fortune = d.fortune || null;
       ns2.solo.responded = true; ns2.solo.answer = "yes"; ns2.solo.respondedAt = Date.now();
       soloDraft = null; soloStep = 0;
       publishState(ns2);
@@ -1388,7 +1578,8 @@
         clearTimeout(btn._armTimer);
         var ns6 = cloneState(state); ns6.solo = null;
         soloDraft = null; soloStep = 0; composeDraft = null; navMode = null; navCategories = new Set(); navSetupOpen = false;
-        try { sessionStorage.removeItem("solo_is_creator"); } catch (e6) {}
+        localCreated = false;
+        if (blobId) { try { sessionStorage.removeItem("solo_creator_" + blobId); } catch (e6) {} }
         publishState(ns6);
       } else armButton(btn, "確定？再按一次");
       return;
@@ -1554,6 +1745,7 @@
   function validateWizStep() {
     var st = soloSteps()[soloStep];
     if (!st) return null;
+    if (st.k === "gacha" && !soloDraft.fortune) return "轉一下扭蛋機，抽支籤吧";
     if (st.k === "cat" && !soloDraft.categories.size) return "先挑一種吧，可以複選";
     if (st.k === "tags") {
       var set = soloDraft.picks[st.cat];
@@ -1616,6 +1808,8 @@
   /* ================= boot ================= */
   function boot() {
     document.getElementById("app-style").textContent = CSS_TEXT;
+    var yearEl = document.getElementById("copyYear");
+    if (yearEl) yearEl.textContent = String(new Date().getFullYear());
     var id = getIdFromUrl();
     if (!id) { state = emptyState(); renderApp(); return; }
     blobId = id;
