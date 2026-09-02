@@ -28,13 +28,17 @@
 
   /* ================= remote storage =================
      jsonblob.com — free, no signup, CORS-enabled public JSON store, used as the
-     shared backend so two browsers on the same link stay in sync. A second
-     provider (jsonstorage.net) is used as an automatic fallback if jsonblob
-     fails when CREATING a new invite, so one provider having a bad day
-     doesn't fully break new links; ids created there are tagged "alt:" so
-     later reads/writes for that one invite know to go back to that same
-     provider. This block is the ONLY place this app touches the network —
-     swap it for your own API if you'd rather. */
+     shared backend so two browsers on the same link stay in sync. Every NEW
+     invite is written to a second provider (jsonstorage.net) at the same
+     time, so one provider having a bad day — a network hiccup, or an
+     outright rejection like an opaque HTTP error — doesn't break the invite:
+     it keeps working as long as at least one provider accepts it. Ids made
+     this way are tagged "dual:<blobId>|<altId>" so later reads/writes know
+     both places to try. Older ids (a plain jsonblob id, or an "alt:"-
+     prefixed id from before dual-write existed) still work exactly as
+     before — this only changes what happens for invites created from now
+     on. This block is the ONLY place this app touches the network — swap it
+     for your own API if you'd rather. */
   var BLOB_API = "https://jsonblob.com/api/jsonBlob";
   var ALT_API = "https://api.jsonstorage.net/v1/json";
   var POLL_MS = 5000;
@@ -52,9 +56,24 @@
     history.replaceState(null, "", u.toString());
   }
   function isAltId(id) { return typeof id === "string" && id.slice(0, 4) === "alt:"; }
+  function isDualId(id) { return typeof id === "string" && id.slice(0, 5) === "dual:"; }
+  function makeDualId(blobRaw, altRaw) { return "dual:" + blobRaw + "|" + altRaw; }
+  function splitDualId(id) {
+    var rest = id.slice(5);
+    var bar = rest.indexOf("|");
+    return { blob: rest.slice(0, bar), alt: rest.slice(bar + 1) };
+  }
   function httpError(status) {
     var e = new Error("HTTP " + status);
     e.httpStatus = status;
+    return e;
+  }
+  // For a response that came back 200/201 but shaped wrong (no Location
+  // header, no "uri" field) — a deterministic problem retrying won't fix,
+  // same as a clean HTTP error.
+  function permanentError(msg) {
+    var e = new Error(msg);
+    e.noRetry = true;
     return e;
   }
   function fetchOk(url, opts) {
@@ -62,30 +81,58 @@
   }
   // Retries only genuine network hiccups (fetch() itself rejecting — offline,
   // DNS, CORS, a blocked request) with a short backoff. A clean HTTP error
-  // (like a 404 for a link that never existed) fails immediately — retrying
-  // that would never help, just delay the real answer.
+  // (like a 404 for a link that never existed, or a provider's own opaque
+  // 400), or a deterministically malformed response, fails immediately —
+  // retrying either would never help, just delay the real answer. That's
+  // what the second provider below is for instead.
   function withRetry(fn, tries, delay) {
     return fn().catch(function (err) {
-      if (tries <= 1 || (err && err.httpStatus)) return Promise.reject(err);
+      if (tries <= 1 || (err && (err.httpStatus || err.noRetry))) return Promise.reject(err);
       return new Promise(function (resolve) { setTimeout(resolve, delay); })
         .then(function () { return withRetry(fn, tries - 1, delay * 2); });
     });
   }
-  function fetchFromBlob(id) {
-    return fetchOk(BLOB_API + "/" + encodeURIComponent(id), { headers: { Accept: "application/json" } }).then(function (r) { return r.json(); });
+  // Turns a promise into one that never rejects, so Promise.all can wait for
+  // two independent attempts and see which of them actually succeeded.
+  function settle(p) {
+    return p.then(function (v) { return { ok: true, v: v }; }, function (e) { return { ok: false, e: e }; });
   }
-  function fetchFromAlt(id) {
-    return fetchOk(ALT_API + "/" + id.slice(4), { headers: { Accept: "application/json" } }).then(function (r) { return r.json(); });
+  // Resolves as soon as EITHER promise succeeds (doesn't wait for the
+  // slower one); rejects only once both have failed. (A small hand-rolled
+  // stand-in for Promise.any, which isn't universally available in the
+  // older mobile browsers this app targets.)
+  function eitherResolves(pA, pB) {
+    return new Promise(function (resolve, reject) {
+      var pending = 2, lastErr;
+      function onFail(e) { lastErr = e; pending -= 1; if (pending === 0) reject(lastErr); }
+      pA.then(resolve, onFail);
+      pB.then(resolve, onFail);
+    });
+  }
+  function fetchFromBlob(rawId) {
+    return fetchOk(BLOB_API + "/" + encodeURIComponent(rawId), { headers: { Accept: "application/json" } }).then(function (r) { return r.json(); });
+  }
+  function fetchFromAlt(rawId) {
+    return fetchOk(ALT_API + "/" + rawId, { headers: { Accept: "application/json" } }).then(function (r) { return r.json(); });
   }
   function fetchRemote(id) {
-    return withRetry(function () { return isAltId(id) ? fetchFromAlt(id) : fetchFromBlob(id); }, 3, 700);
+    if (isDualId(id)) {
+      var dp = splitDualId(id);
+      // Sequential, not racing: routine 5-second polling would otherwise
+      // burn through jsonstorage's tight monthly quota for no real benefit —
+      // the primary answers almost every time, so the second provider is
+      // only consulted when the first one fails.
+      return withRetry(function () { return fetchFromBlob(dp.blob); }, 3, 700)
+        .catch(function () { return fetchFromAlt(dp.alt); });
+    }
+    return withRetry(function () { return isAltId(id) ? fetchFromAlt(id.slice(4)) : fetchFromBlob(id); }, 3, 700);
   }
   function createOnBlob(stateObj) {
     return fetchOk(BLOB_API, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(stateObj) })
       .then(function (r) {
         var loc = r.headers.get("Location") || r.headers.get("location");
         var id = loc ? loc.split("/").filter(Boolean).pop() : null;
-        if (!id) throw new Error("伺服器沒有回傳連結編號");
+        if (!id) throw permanentError("伺服器沒有回傳連結編號");
         return id;
       });
   }
@@ -94,19 +141,44 @@
       .then(function (r) { return r.json(); })
       .then(function (j) {
         var m = j && j.uri && String(j.uri).match(/\/v1\/json\/(.+)$/);
-        if (!m) throw new Error("備援伺服器沒有回傳連結編號");
-        return "alt:" + m[1];
+        if (!m) throw permanentError("備援伺服器沒有回傳連結編號");
+        return m[1];
       });
   }
+  // Try both providers at once. If both accept the invite, it gets a
+  // "dual:" id so every future write/read for it uses both. If only one
+  // accepts, fall back to a plain single-provider id exactly like before.
+  // Only fails if both providers refuse it.
   function createRemote(stateObj) {
-    return withRetry(function () { return createOnBlob(stateObj); }, 3, 700)
-      .catch(function () { return createOnAlt(stateObj); });
+    var blobTry = withRetry(function () { return createOnBlob(stateObj); }, 3, 700);
+    var altTry = withRetry(function () { return createOnAlt(stateObj); }, 3, 700);
+    return Promise.all([settle(blobTry), settle(altTry)]).then(function (r) {
+      var b = r[0], a = r[1];
+      if (b.ok && a.ok) return makeDualId(b.v, a.v);
+      if (b.ok) return b.v;
+      if (a.ok) return "alt:" + a.v;
+      throw b.e;
+    });
+  }
+  function putOnBlob(rawId, stateObj) {
+    return withRetry(function () {
+      return fetchOk(BLOB_API + "/" + encodeURIComponent(rawId), { method: "PUT", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(stateObj) });
+    }, 3, 700);
+  }
+  function putOnAlt(rawId, stateObj) {
+    return withRetry(function () {
+      return fetchOk(ALT_API + "/" + rawId, { method: "PUT", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(stateObj) });
+    }, 3, 700);
   }
   function putRemote(id, stateObj) {
-    var url = isAltId(id) ? ALT_API + "/" + id.slice(4) : BLOB_API + "/" + encodeURIComponent(id);
-    return withRetry(function () {
-      return fetchOk(url, { method: "PUT", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(stateObj) });
-    }, 3, 700);
+    if (isDualId(id)) {
+      var dp = splitDualId(id);
+      // Written to both providers in parallel. A single provider having a
+      // bad day (like the opaque HTTP 400 this fix was built for) no longer
+      // blocks the sync — this only fails if BOTH providers refuse it.
+      return eitherResolves(putOnBlob(dp.blob, stateObj), putOnAlt(dp.alt, stateObj));
+    }
+    return isAltId(id) ? putOnAlt(id.slice(4), stateObj) : putOnBlob(id, stateObj);
   }
 
   /* ================= design system ================= */
@@ -447,10 +519,22 @@
     ".fortune-slip--mini .fortune-slip__poem{font-size:.86rem;}",
 
     /* ---------- decline (can't actually be clicked) ---------- */
-    ".btn--nope{opacity:.4;cursor:default;}",
+    ".btn--nope{opacity:.4;cursor:default;transform-origin:center;}",
     ".btn--nope:active{transform:none;}",
     ".btn--nope.shake{animation:nopeShake .4s ease;}",
     "@keyframes nopeShake{0%,100%{transform:translateX(0);}20%{transform:translateX(-4px);}40%{transform:translateX(4px);}60%{transform:translateX(-3px);}80%{transform:translateX(3px);}}",
+    // a small pool of playful "you can't actually press this" reactions — a
+    // different one plays each tap so the button feels alive, not broken.
+    ".btn--nope.dodge{animation:nopeDodge .5s ease;}",
+    "@keyframes nopeDodge{0%{transform:translateX(0) rotate(0);}20%{transform:translateX(-22px) rotate(-8deg);}40%{transform:translateX(16px) rotate(6deg);}60%{transform:translateX(-11px) rotate(-4deg);}80%{transform:translateX(6px) rotate(2deg);}100%{transform:translateX(0) rotate(0);}}",
+    ".btn--nope.vanish{animation:nopeVanish 1s cubic-bezier(.34,1.56,.64,1);}",
+    "@keyframes nopeVanish{0%{transform:scale(1) rotate(0);opacity:.4;}30%{transform:scale(.15) rotate(20deg);opacity:0;}72%{transform:scale(.15) rotate(20deg);opacity:0;}100%{transform:scale(1) rotate(0);opacity:.4;}}",
+    ".btn--nope.spin{animation:nopeSpin .65s ease;}",
+    "@keyframes nopeSpin{0%{transform:rotate(0) scale(1);opacity:.4;}50%{transform:rotate(300deg) scale(.5);opacity:.15;}100%{transform:rotate(360deg) scale(1);opacity:.4;}}",
+    ".btn--nope.flip{animation:nopeFlip .55s ease;}",
+    "@keyframes nopeFlip{0%{transform:scaleY(1);}45%,55%{transform:scaleY(.05);}100%{transform:scaleY(1);}}",
+    ".btn--nope.hop{animation:nopeHop .5s ease;}",
+    "@keyframes nopeHop{0%,100%{transform:translateY(0) scale(1);}30%{transform:translateY(-16px) scale(1.05);}55%{transform:translateY(2px) scale(.96);}75%{transform:translateY(-6px) scale(1.02);}}",
     ".decline-hint{margin-top:10px;font-size:.72rem;color:var(--terra-2);opacity:0;transition:opacity .25s;min-height:1em;}",
     ".decline-hint.show{opacity:1;}",
 
@@ -1504,10 +1588,23 @@
     }
     if (action === "solo-decline-nope") {
       // playful, deliberate: this option looks clickable but never actually
-      // lets the recipient decline — it just shakes and offers a coy hint.
-      btn.classList.remove("shake"); void btn.offsetWidth; btn.classList.add("shake");
+      // lets the recipient decline — it dodges/vanishes/spins away instead,
+      // a different reaction each tap, and offers a coy hint.
+      var nopeModes = ["shake", "dodge", "vanish", "spin", "flip", "hop"];
+      var nopePool = nopeModes.filter(function (m) { return m !== btn.dataset.lastNope; });
+      var nopeMode = nopePool[Math.floor(Math.random() * nopePool.length)];
+      btn.dataset.lastNope = nopeMode;
+      nopeModes.forEach(function (m) { btn.classList.remove(m); });
+      void btn.offsetWidth;
+      btn.classList.add(nopeMode);
       var dh = document.getElementById("declineHint");
-      if (dh) { dh.classList.add("show"); clearTimeout(dh._t); dh._t = setTimeout(function () { dh.classList.remove("show"); }, 1600); }
+      if (dh) {
+        var nopeHints = ["這個選項，好像按不下去。", "咦，它跑掉了。", "它好像不太願意。", "再試也是一樣喔。", "這顆鈕看來心意已決。"];
+        dh.textContent = nopeHints[Math.floor(Math.random() * nopeHints.length)];
+        dh.classList.add("show");
+        clearTimeout(dh._t);
+        dh._t = setTimeout(function () { dh.classList.remove("show"); }, 1600);
+      }
       return;
     }
     if (action === "gacha-pull") {
