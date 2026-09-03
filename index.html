@@ -27,19 +27,38 @@
   "use strict";
 
   /* ================= remote storage =================
-     jsonblob.com — free, no signup, CORS-enabled public JSON store, used as the
-     shared backend so two browsers on the same link stay in sync. Every NEW
-     invite is written to a second provider (jsonstorage.net) at the same
-     time, so one provider having a bad day — a network hiccup, or an
-     outright rejection like an opaque HTTP error — doesn't break the invite:
-     it keeps working as long as at least one provider accepts it. Ids made
-     this way are tagged "dual:<blobId>|<altId>" so later reads/writes know
-     both places to try. Older ids (a plain jsonblob id, or an "alt:"-
-     prefixed id from before dual-write existed) still work exactly as
-     before — this only changes what happens for invites created from now
-     on. This block is the ONLY place this app touches the network — swap it
-     for your own API if you'd rather. */
-  var BLOB_API = "https://jsonblob.com/api/jsonBlob";
+     jsonbin.io — free JSON store, used as the shared backend so two browsers
+     on the same link stay in sync. (jsonblob.com used to fill this role, but
+     it started actively blocking this app's requests — a Cloudflare 403 on
+     every attempt, from every network, incognito included — so it's been
+     retired; that's not something retrying or a fallback provider can work
+     around.) Every NEW invite is ALSO written to a second, no-signup
+     provider (jsonstorage.net) at the same time, so one provider having a
+     bad day doesn't break the invite: it keeps working as long as at least
+     one provider accepts it. Ids made this way are tagged
+     "dual:<primaryId>|<altId>" so later reads/writes know both places to
+     try. Older ids (a plain jsonblob id, or an "alt:"-prefixed id from
+     before dual-write existed) still work exactly as before. This block is
+     the ONLY place this app touches the network — swap it for your own API
+     if you'd rather.
+
+     ⚠️ ACTION NEEDED — jsonbin.io needs a free API key (jsonblob.com never
+     did, which is part of why it got hammered into a block). Takes about
+     two minutes:
+       1. Go to https://jsonbin.io and click "Create a Free Account".
+       2. Once signed in, open your account's API Keys page and copy your
+          "X-Master-Key" (a long string).
+       3. Paste it below, replacing JSONBIN_KEY_PLACEHOLDER.
+     Free tier: 10,000 requests/month, no credit card. Like every id and
+     every invite's content, this key ends up sitting in this file's plain
+     source — fine for a low-stakes meetup-coordination toy, just don't
+     reuse it for anything you'd mind a stranger reading. Until you paste a
+     real key in, this app quietly skips jsonbin.io and relies on
+     jsonstorage.net alone (a working app, just without the redundancy). */
+  var JSONBIN_KEY_PLACEHOLDER = "PASTE_YOUR_JSONBIN_MASTER_KEY_HERE";
+  var JSONBIN_KEY = "PASTE_YOUR_JSONBIN_MASTER_KEY_HERE";
+  function primaryReady() { return !!JSONBIN_KEY && JSONBIN_KEY !== JSONBIN_KEY_PLACEHOLDER; }
+  var BLOB_API = "https://api.jsonbin.io/v3/b";
   var ALT_API = "https://api.jsonstorage.net/v1/json";
   var POLL_MS = 5000;
   var blobId = null;
@@ -110,7 +129,8 @@
     });
   }
   function fetchFromBlob(rawId) {
-    return fetchOk(BLOB_API + "/" + encodeURIComponent(rawId), { headers: { Accept: "application/json" } }).then(function (r) { return r.json(); });
+    if (!primaryReady()) return Promise.reject(permanentError("尚未設定 jsonbin.io 金鑰"));
+    return fetchOk(BLOB_API + "/" + encodeURIComponent(rawId), { headers: { "X-Master-Key": JSONBIN_KEY, "X-Bin-Meta": "false" } }).then(function (r) { return r.json(); });
   }
   function fetchFromAlt(rawId) {
     return fetchOk(ALT_API + "/" + rawId, { headers: { Accept: "application/json" } }).then(function (r) { return r.json(); });
@@ -128,10 +148,11 @@
     return withRetry(function () { return isAltId(id) ? fetchFromAlt(id.slice(4)) : fetchFromBlob(id); }, 3, 700);
   }
   function createOnBlob(stateObj) {
-    return fetchOk(BLOB_API, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(stateObj) })
-      .then(function (r) {
-        var loc = r.headers.get("Location") || r.headers.get("location");
-        var id = loc ? loc.split("/").filter(Boolean).pop() : null;
+    if (!primaryReady()) return Promise.reject(permanentError("尚未設定 jsonbin.io 金鑰"));
+    return fetchOk(BLOB_API, { method: "POST", headers: { "Content-Type": "application/json", "X-Master-Key": JSONBIN_KEY, "X-Bin-Private": "false" }, body: JSON.stringify(stateObj) })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        var id = j && j.metadata && j.metadata.id;
         if (!id) throw permanentError("伺服器沒有回傳連結編號");
         return id;
       });
@@ -161,8 +182,9 @@
     });
   }
   function putOnBlob(rawId, stateObj) {
+    if (!primaryReady()) return Promise.reject(permanentError("尚未設定 jsonbin.io 金鑰"));
     return withRetry(function () {
-      return fetchOk(BLOB_API + "/" + encodeURIComponent(rawId), { method: "PUT", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(stateObj) });
+      return fetchOk(BLOB_API + "/" + encodeURIComponent(rawId), { method: "PUT", headers: { "Content-Type": "application/json", "X-Master-Key": JSONBIN_KEY }, body: JSON.stringify(stateObj) });
     }, 3, 700);
   }
   function putOnAlt(rawId, stateObj) {
