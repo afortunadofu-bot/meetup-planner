@@ -716,21 +716,21 @@
 
   /* ---------- fortune slips for the gacha machine ---------- */
   var FORTUNES = [
-    { poem: "見了他，她變得很低很低，低到塵埃裡，但她心裡是歡喜的，從塵埃裡開出花來。", src: "張愛玲", note: "宜靠近，宜坦白" },
-    { poem: "我將於茫茫人海中訪我唯一靈魂之伴侶，得之，我幸；不得，我命。", src: "徐志摩", note: "宜等待，宜隨緣" },
-    { poem: "我明白你會來，所以我等。", src: "沈從文", note: "宜赴約，宜守時" },
-    { poem: "你是人間的四月天。", src: "林徽因", note: "宜相見，宜歡喜" },
-    { poem: "從前的日色變得慢，車，馬，郵件都慢，一生只夠愛一個人。", src: "木心", note: "宜慢下來，宜久處" },
-    { poem: "喜歡是乍見之歡，愛是久處不厭。", src: "張小嫻", note: "宜相處，宜久坐" },
-    { poem: "陪伴是最長情的告白。", src: "廖一梅", note: "宜久處，宜同行" },
-    { poem: "Whatever our souls are made of, his and mine are the same.", src: "Emily Brontë", note: "宜靠近，宜相守" },
-    { poem: "It is only with the heart that one can see rightly.", src: "Antoine de Saint-Exupéry", note: "宜用心，宜靠近" },
-    { poem: "Lovers don't finally meet somewhere. They're in each other all along.", src: "Rumi", note: "宜相遇，宜安心" },
-    { poem: "To love oneself is the beginning of a lifelong romance.", src: "Oscar Wilde", note: "宜自在，宜出門" },
-    { poem: "I love you without knowing how, or when, or from where.", src: "Pablo Neruda", note: "宜靠近，宜告白" },
-    { poem: "Journeys end in lovers meeting, every wise man's son doth know.", src: "William Shakespeare", note: "宜赴約，宜相聚" },
-    { poem: "How do I love thee? Let me count the ways.", src: "Elizabeth Barrett Browning", note: "宜細數，宜靠近" },
-    { poem: "The supreme happiness of life is the conviction that one is loved.", src: "Victor Hugo", note: "宜安心，宜珍惜" }
+    { poem: "相信自己能做到，你就已經完成了一半。", src: "西奧多·羅斯福", note: "宜出發，宜相信自己" },
+    { poem: "不管你走得多慢，只要不停下來就好。", src: "孔子", note: "宜慢慢來" },
+    { poem: "太陽剛升起時很微弱，但隨著一天推進，它會積蓄力量與勇氣。", src: "查爾斯·狄更斯", note: "宜早點出門" },
+    { poem: "我們人生的目的是快樂。", src: "達賴喇嘛", note: "宜開心，宜吃好料" },
+    { poem: "我無法改變風的方向，但我可以調整帆，抵達目的地。", src: "吉米·迪恩", note: "宜隨機應變" },
+    { poem: "如果你關注你擁有的，你將永遠擁有更多。", src: "歐普拉·溫芙蕾", note: "宜知足，宜珍惜" },
+    { poem: "如果你想讓自己更好，就去幫別人變得更好。", src: "布克·T·華盛頓", note: "宜分享，宜請客" },
+    { poem: "一年後的今天，你會希望自己今天就開始了。", src: "卡倫·蘭姆", note: "宜現在就約" },
+    { poem: "取得進步的祕訣就是開始行動。", src: "馬克·吐溫", note: "宜說走就走" },
+    { poem: "如果我們有勇氣追求，所有夢想都可能成真。", src: "華特·迪士尼", note: "宜作夢，宜大膽" },
+    { poem: "未來屬於相信自己夢想之美的人。", src: "愛蓮娜·羅斯福", note: "宜相信，宜期待" },
+    { poem: "想像力的力量使我們變得無限。", src: "約翰·繆爾", note: "宜發揮創意" },
+    { poem: "在一個總想讓你變成別人的世界裡，做自己就是最了不起的成就。", src: "愛默生", note: "宜做自己" },
+    { poem: "成為你本可以成為的人，永遠不嫌晚。", src: "喬治·艾略特", note: "宜嘗試新事物" },
+    { poem: "誰快樂，便會讓他人也快樂。", src: "安妮·法蘭克", note: "宜笑，宜相聚" }
   ];
 
   /* ================= helpers ================= */
@@ -906,7 +906,7 @@
   /* ================= opening ================= */
   function renderHome() {
     return (
-      '<div class="hero hero--lead">' + epigraph("人閒桂花落，夜靜春山空。", "王維", true, true) + "</div>" +
+      '<div class="hero hero--lead">' + epigraph("永遠面向陽光，陰影就會落在你身後。", "惠特曼", true, true) + "</div>" +
       orn() +
       '<div class="pick-grid">' +
       pickCard("solo", "💌", "想約一個人", "", "--accent", "01") +
@@ -929,7 +929,7 @@
     var n = navCategories.size;
     return (
       topbar(false) +
-      '<div class="hero hero--sub">' + epigraph("行到水窮處，坐看雲起時。", "王維") +
+      '<div class="hero hero--sub">' + epigraph("千里之行，始於足下。", "老子") +
       '<h1 class="hero__title">想做什麼？</h1></div>' +
       '<div class="pick-grid">' + CATEGORY_LIST.map(function (k, i) {
         return catCard(CATEGORIES[k], navCategories.has(k), "toggle-nav-cat", i);
@@ -969,7 +969,7 @@
     var d = composeDraft;
     return (
       topbar(false) +
-      '<div class="hero hero--lead">' + epigraph("我喜歡你是寂靜的，彷彿你消失了一樣。", "聶魯達", false, true) + "</div>" +
+      '<div class="hero hero--lead">' + epigraph("世界上最美好的事物，看不見也摸不著，要用心去感受。", "海倫·凱勒", false, true) + "</div>" +
       '<div class="sheet"><div class="sheet__slate"><span>見字如晤</span></div>' +
       '<div class="sheet__body">' +
       '<label class="fld-label" for="composeInviter">你的名字</label>' +
@@ -996,7 +996,7 @@
   function renderSoloProposal() {
     var s = state.solo;
     return (
-      epigraph("於千萬人之中，遇見你所要遇見的人。", "張愛玲", true) +
+      epigraph("今天是個適合度過美好一天的日子。", "每日一句", true) +
       '<div class="card">' +
       '<div class="card__strip"><span>邀請</span><span>有約</span></div>' +
       archPoster("var(--terra)", '<div class="poster__art">💌</div>') +
@@ -1016,7 +1016,7 @@
   function renderSoloWaiting() {
     var s = state.solo;
     return (
-      epigraph("有約不來過夜半，閒敲棋子落燈花。", "趙師秀", true) +
+      epigraph("最好的尚未到來。", "每日一句", true) +
       '<div class="card">' +
       '<div class="card__strip"><span>已寄出</span><span>有約</span></div>' +
       archPoster("var(--slate-deep)", '<div class="poster__art">📮</div>') +
@@ -1181,7 +1181,7 @@
       (s.replyNote ? s.replyNote + "\n\n" : "") + "由「有約」建立");
 
     return (
-      epigraph("噢，你也在這裡嗎？", "張愛玲", true) +
+      epigraph("收集瞬間，而非物品。", "每日一句", true) +
       '<div class="card">' +
       '<div class="card__strip"><span>成局</span><span>有約</span></div>' +
       archPoster(tone, archDate(s.date)) +
